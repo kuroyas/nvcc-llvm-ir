@@ -1,5 +1,5 @@
 # change from orig
-make succesfully , but occur this error.
+make succesfully @llvm4.0 , but occur this error.
 
 ```
 $CICC_MODIFY_UNOPT_MODULE=1 LD_PRELOAD=./libnvcc.so nvcc -arch=sm_30 test.cu -c -keep
