@@ -3,10 +3,10 @@
 all: libcicc.so libnvcc.so
 
 libcicc.so: cicc.cpp
-	g++ -g -O3 -D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS -I/opt/llvm-3.0/include -I/opt/cuda/nvvm/include/ -fPIC $< -shared -o $@ -ldl -L/opt/llvm-3.0/lib -Wl,--start-group -lLLVMCore -lLLVMSupport -lLLVMipo -lLLVMipa -lLLVMAnalysis -lLLVMTarget -lLLVMScalarOpts -lLLVMTransformUtils -lLLVMInstCombine -Wl,--end-group -lpthread
+	g++ -Wall -std=c++11 -g -O3 -D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS -I/usr/include/llvm-4.0 -I/usr/include/llvm-c-4.0 -I/usr/local/cuda/nvvm/include -fPIC $< -shared -o $@ -ldl -L/usr/lib/llvm-4.0/lib -Wl,--start-group -lLLVMCore -lLLVMSupport -lLLVMipo -lLLVMAnalysis -lLLVMTarget -lLLVMScalarOpts -lLLVMTransformUtils -lLLVMInstCombine -Wl,--end-group -lpthread
 
 libnvcc.so: nvcc.cpp
-	g++ -g -O3 -I/opt/cuda/nvvm/include/ -fPIC $< -shared -o $@ -ldl
+	g++ -g -O3 -I/usr/local/cuda/nvvm/include -fPIC $< -shared -o $@ -ldl
 
 clean:
 	rm -rf libcicc.so libnvcc.so
@@ -28,4 +28,3 @@ test2_unopt: libcicc.so libnvcc.so
 
 test2_opt: libcicc.so libnvcc.so
 	CICC_MODIFY_OPT_MODULE=1 LD_PRELOAD=./libnvcc.so nvcc -arch=sm_30 test2.cu -rdc=true -c -keep
-

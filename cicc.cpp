@@ -1,9 +1,10 @@
-#include <llvm/Constants.h>
-#include <llvm/Instructions.h>
-#include <llvm/LLVMContext.h>
-#include <llvm/Module.h>
-#include "llvm/PassManager.h"
-#include <llvm/Bitcode/ReaderWriter.h>
+#include <llvm/IR/Constants.h>
+#include <llvm/IR/Instructions.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
+#include "llvm/IR/PassManager.h"
+#include <llvm/Bitcode/BitcodeReader.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/raw_ostream.h>
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
@@ -48,7 +49,8 @@ if (!sym##_real) \
 	} \
 }
 
-static Module* initial_module = NULL;
+//static Module* initial_module = NULL;
+static std::unique_ptr<Module> initial_module;
 
 // Starting form the specified block, follow all braches of parallel region,
 // marking target blocks as parallel. Continue until returning back into
@@ -87,12 +89,12 @@ static bool followParallelBasicBlock(BasicBlock* bb, list<BasicBlock*>& pbl, int
 
 				// Nuke end_parallel_region call.
 				nb1->begin()->eraseFromParent();
-				
+
 				// The end of parallel region has been found - leave now.
 				return true;
 			}
 		}
-		
+
 		// Follow successors in BranchInst, SwitchInst and IndirectBranchInst.
 		// Skip blocks that are already known to belong to parallel region.
 		BranchInst* bi = dyn_cast<BranchInst>(cast<Value>(ii));
@@ -115,7 +117,7 @@ static bool followParallelBasicBlock(BasicBlock* bb, list<BasicBlock*>& pbl, int
 				if (find(pbl.begin(), pbl.end(), succ) != pbl.end()) continue;
 				pbl.push_back(succ);
 				result |= followParallelBasicBlock(succ, pbl, nparallel);
-			}			
+			}
 		}
 		IndirectBrInst* ibi = dyn_cast<IndirectBrInst>(cast<Value>(ii));
 		if (ibi)
@@ -129,7 +131,7 @@ static bool followParallelBasicBlock(BasicBlock* bb, list<BasicBlock*>& pbl, int
 			}
 		}
 	}
-	
+
 	return result;
 }
 
@@ -138,12 +140,12 @@ static void markParallelBasicBlocks(Module* module, vector<BasicBlock*>& paralle
 {
 	Function* begin_parallel_region = module->getFunction("begin_parallel_region");
 	Function* end_parallel_region = module->getFunction("end_parallel_region");
-	
+
 	// If parallel region guards are not declared, then they are not used
 	// anywhere => no parallel regions, nothing to do, leave early.
 	if (!begin_parallel_region && !end_parallel_region)
 		return;
-	
+
 	if (!begin_parallel_region)
 	{
 		fprintf(stderr, "nvcc-llvm-ir: unmatched end_parallel_region found\n");
@@ -167,14 +169,14 @@ static void markParallelBasicBlocks(Module* module, vector<BasicBlock*>& paralle
 		{
 			for (Function::iterator bi = fi->begin(), be = fi->end(); bi != be; bi++)
 			{
-				BasicBlock* b = bi;
+                          BasicBlock* b = &(*bi);
 				if (restart && (b != restart)) continue;
 
 				restart = NULL;
-				
+
 				// Skip blocks that are already known to belong to parallel region.
-				if (find(pbl.begin(), pbl.end(), b) != pbl.end()) continue;				
-		
+				if (find(pbl.begin(), pbl.end(), b) != pbl.end()) continue;
+
 				for (BasicBlock::iterator ii = b->begin(), ie = b->end(); ii != ie; ii++)
 				{
 					CallInst* ci = dyn_cast<CallInst>(cast<Value>(ii));
@@ -184,7 +186,7 @@ static void markParallelBasicBlocks(Module* module, vector<BasicBlock*>& paralle
 					if (!callee) continue;
 					if (callee->getName() != "begin_parallel_region")
 						continue;
-					
+
 					// Move CallInst and all insts below CallInst to a new block.
 					BasicBlock *nb1 = NULL;
 					{
@@ -195,13 +197,13 @@ static void markParallelBasicBlocks(Module* module, vector<BasicBlock*>& paralle
 						name << ".begin_parallel_" << nparallel;
 						nb1 = bi->splitBasicBlock(SplitIt, b->getName() + name.str());
 					}
-				
+
 					// Nuke begin_parallel_region call.
 					nb1->begin()->eraseFromParent();
-					
+
 					// Add nb1 to the list of parallel blocks.
 					pbl.push_back(nb1);
-					
+
 					// Starting form nb1, follow all braches of parallel region, marking target
 					// blocks as parallel. Continue until returning back into block marked as
 					// parallel, or until the end_parallel_region call is approached.
@@ -212,20 +214,20 @@ static void markParallelBasicBlocks(Module* module, vector<BasicBlock*>& paralle
 						fprintf(stderr, "nvcc-llvm-ir: unmatched begin_parallel_region found\n");
 						exit(1);
 					}
-					
+
 					nparallel++;
 
 					// Continue iterating basic blocks from nb2.
 					restart = nb1;
 					break;
 				}
-			
+
 				if (restart) break;
 			}
 		}
 		while (restart);
 	}
-	
+
 	// Export parallel blocks list into vector.
 	parallelBlocks.reserve(pbl.size());
 	parallelBlocks.assign(pbl.begin(), pbl.end());
@@ -259,20 +261,20 @@ static void storeInZeroThreadOnly(Module* module, vector<BasicBlock*>& parallelB
 		{
 			for (Function::iterator bi = fi->begin(), be = fi->end(); bi != be; bi++)
 			{
-				BasicBlock* b = bi;
+				BasicBlock* b = &(*bi);
 				if (restart && (b != restart)) continue;
 
 				restart = NULL;
-				
+
 				// Skip basic blocks belonging to parallel regions.
 				if (find(parallelBlocks.begin(), parallelBlocks.end(), b) != parallelBlocks.end())
 					continue;
-		
+
 				for (BasicBlock::iterator ii = b->begin(), ie = b->end(); ii != ie; ii++)
 				{
 					StoreInst* si = dyn_cast<StoreInst>(cast<Value>(ii));
 					if (!si) continue;
-			
+
 					// Move StoreInst and all insts below StoreInst to a new block.
 					BasicBlock *nb1 = NULL;
 					{
@@ -283,7 +285,7 @@ static void storeInZeroThreadOnly(Module* module, vector<BasicBlock*>& parallelB
 						name << ".store_" << nsplits;
 						nb1 = bi->splitBasicBlock(SplitIt, b->getName() + name.str());
 					}
-				
+
 					BasicBlock::iterator nii1 = nb1->begin();
 					nii1++;
 
@@ -292,7 +294,7 @@ static void storeInZeroThreadOnly(Module* module, vector<BasicBlock*>& parallelB
 					{
 						BasicBlock::iterator SplitIt = nii1;
 						while (isa<PHINode>(SplitIt) || isa<LandingPadInst>(SplitIt))
-							SplitIt++;				
+							SplitIt++;
 						stringstream name;
 						name << ".else_" << nsplits;
 						nb2 = nb1->splitBasicBlock(SplitIt, b->getName() + name.str());
@@ -300,8 +302,8 @@ static void storeInZeroThreadOnly(Module* module, vector<BasicBlock*>& parallelB
 
 					// Call intrinsic to retrieve threadIdx value.
 					Value* tid = CallInst::Create(threadIdx, "", b->getTerminator());
-				
-					// Check if threadIdx is equal to zero. 
+
+					// Check if threadIdx is equal to zero.
 					Value* cond = new ICmpInst(b->getTerminator(),
 						ICmpInst::ICMP_EQ, tid, zero, "");
 
@@ -312,12 +314,12 @@ static void storeInZeroThreadOnly(Module* module, vector<BasicBlock*>& parallelB
 					BranchInst* bi = BranchInst::Create(nb1, nb2, cond, b);
 
 					nsplits++;
-				
+
 					// Continue iterating basic blocks from nb2.
 					restart = nb2;
 					break;
 				}
-			
+
 				if (restart) break;
 			}
 		}
@@ -355,25 +357,28 @@ nvvmResult nvvmAddModuleToProgram(nvvmProgram prog, const char *bitcode, size_t 
 	bind_sym(libnvvm, nvvmAddModuleToProgram, nvvmResult, nvvmProgram, const char*, size_t, const char*);
 
 	// Load module from bitcode.
-	if (getenv("CICC_MODIFY_UNOPT_MODULE") && !initial_module)
+	if (getenv("CICC_MODIFY_UNOPT_MODULE") && !initial_module.get())
 	{
 		string source = "";
 		source.reserve(size);
 		source.assign(bitcode, bitcode + size);
-		MemoryBuffer *input = MemoryBuffer::getMemBuffer(source);
+		std::unique_ptr<MemoryBuffer> input(MemoryBuffer::getMemBuffer(source));
 		string err;
-		LLVMContext &context = getGlobalContext();
-		initial_module = ParseBitcodeFile(input, context, &err);
-		if (!initial_module)
+		//LLVMContext &context = getGlobalContext();
+                LLVMContext *context;
+                static LLVMContext MyGlobalContext;
+                context = &MyGlobalContext;
+		auto errfile = parseBitcodeFile(input.get()->getMemBufferRef(), *context);
+		if (!errfile)
 			cerr << "Error parsing module bitcode : " << err;
 
-		modifyModule(initial_module);
+		modifyModule(initial_module.get());
 
 		// Save module back into bitcode.
 		SmallVector<char, 128> output;
 		raw_svector_ostream outputStream(output);
-		WriteBitcodeToFile(initial_module, outputStream);
-		outputStream.flush();
+		WriteBitcodeToFile(initial_module.get(), outputStream);
+		//outputStream.flush();
 
 		// Call real nvvmAddModuleToProgram
 		return nvvmAddModuleToProgram_real(prog, output.data(), output.size(), name);
@@ -382,7 +387,7 @@ nvvmResult nvvmAddModuleToProgram(nvvmProgram prog, const char *bitcode, size_t 
 	called_compile = true;
 
 	// Call real nvvmAddModuleToProgram
-	return nvvmAddModuleToProgram_real(prog, bitcode, size, name);	
+	return nvvmAddModuleToProgram_real(prog, bitcode, size, name);
 }
 
 #undef bind_lib
@@ -417,7 +422,7 @@ struct tm *localtime(const time_t *timep)
 
 		modifyModule(optimized_module);
 	}
-	
+
 	return localtime_real(timep);
 }
 
@@ -429,21 +434,21 @@ struct sbrk_t { void* address; size_t size; };
 static sbrk_t sbrks[MAX_SBRKS];
 static int nsbrks = 0;
 
-static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t mutex_val = PTHREAD_MUTEX_INITIALIZER;
 
 extern "C" void* malloc(size_t size)
 {
 	if (!size) return NULL;
 
 	static bool __thread inside_malloc = false;
-	
+
 	if (!inside_malloc)
 	{
 		inside_malloc = true;
 
 		bind_lib(LIBC);
 		bind_sym(libc, malloc, void*, size_t);
-		
+
 		inside_malloc = false;
 
 		void* result = malloc_real(size);
@@ -461,13 +466,13 @@ extern "C" void* malloc(size_t size)
 	if (nsbrks == MAX_SBRKS)
 	{
 		fprintf(stderr, "Out of sbrk tracking pool space\n");
-		pthread_mutex_unlock(&mutex);
+		pthread_mutex_unlock(&mutex_val);
 		abort();
 	}
-	pthread_mutex_lock(&mutex);
+	pthread_mutex_lock(&mutex_val);
 	sbrk_t s; s.address = result; s.size = size;
 	sbrks[nsbrks++] = s;
-	pthread_mutex_unlock(&mutex);
+	pthread_mutex_unlock(&mutex_val);
 
 	return result;
 }
@@ -476,7 +481,7 @@ extern "C" void* realloc(void* ptr, size_t size)
 {
 	bind_lib(LIBC);
 	bind_sym(libc, realloc, void*, void*, size_t);
-	
+
 	for (int i = 0; i < nsbrks; i++)
 		if (ptr == sbrks[i].address)
 		{
@@ -485,7 +490,7 @@ extern "C" void* realloc(void* ptr, size_t size)
 			memcpy(result, ptr, MIN(size, sbrks[i].size));
 			return result;
 		}
-	
+
 	return realloc_real(ptr, size);
 }
 
@@ -494,11 +499,10 @@ extern "C" void free(void* ptr)
 	bind_lib(LIBC);
 	bind_sym(libc, free, void, void*);
 
-	pthread_mutex_lock(&mutex);
+	pthread_mutex_lock(&mutex_val);
 	for (int i = 0; i < nsbrks; i++)
 		if (ptr == sbrks[i].address) return;
-	pthread_mutex_unlock(&mutex);
-	
+	pthread_mutex_unlock(&mutex_val);
+
 	free_real(ptr);
 }
-
